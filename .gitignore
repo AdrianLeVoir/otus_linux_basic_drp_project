@@ -1,0 +1,8 @@
+cd otus_linux_basic_drp_project
+cat > .gitignore <<'EOF'
+.env
+positions/
+*.log
+*.bak
+*.swp
+EOF
