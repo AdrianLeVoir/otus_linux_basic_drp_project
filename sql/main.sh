@@ -28,7 +28,7 @@ check_mariadb() {
     local host="$1"
     sleep 2
     if ! ssh "$host" "sudo systemctl is-active --quiet mariadb"; then
-        echo "MariaDB не запущен на $host"
+        echo " MariaDB не запущен на $host"
         ssh "$host" "sudo journalctl -u mariadb --no-pager -n 15" || true
         return 1
     fi
@@ -54,7 +54,7 @@ simulate_breakage() {
     echo " 3) MariaDB на реплике остановлен"
     echo " 4) Пользователь repl удалён с мастера"
     echo " 5) Пароль repl изменён на неверный"
-    echo " 0) назад"
+    echo " 0) ← назад"
     echo "────────────────────────────────────────"
     read -p "Выбор: " break_choice
     echo ""
@@ -110,9 +110,9 @@ show_commands_menu() {
         echo " 5) Список баз данных"
         echo " 6) Таблицы sakila"
         echo " 7) Таблицы sakila + кол-во строк"
-        echo "8) Статус реплики"
-        echo "9) Активные процессы MySQL"
-        echo "10) Тестовая поломка"
+        echo " 8) Статус реплики"
+        echo " 9) Активные процессы MySQL"
+        echo " 10) Тестовая поломка"
         echo ""
         echo " 0) Выход"
         echo "────────────────────────────────────────"
@@ -127,9 +127,9 @@ show_commands_menu() {
             5) run_mysql "$MASTER" "SHOW DATABASES;" ;;
             6) run_mysql "$MASTER" "USE sakila; SHOW TABLES;" ;;
             7) run_mysql "$MASTER" "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema='sakila' AND table_type='BASE TABLE';" ;;
-           8) run_mysql "$REPLICA" "SHOW SLAVE STATUS\G" | grep -E 'Slave_IO|Slave_SQL|Seconds_Behind|Master_Host|Last_SQL_Error' || echo "Репликация не настроена" ;;
-           9) run_mysql "$REPLICA" "SHOW PROCESSLIST;" ;;
-           10) simulate_breakage ;;
+            8) run_mysql "$REPLICA" "SHOW SLAVE STATUS\G" | grep -E 'Slave_IO|Slave_SQL|Seconds_Behind|Master_Host|Last_SQL_Error' || echo "Репликация не настроена" ;;
+            9) run_mysql "$REPLICA" "SHOW PROCESSLIST;" ;;
+            10) simulate_breakage ;;
             0) echo "Выход."; break ;;
             *) echo "Неверный выбор" ;;
         esac
@@ -140,9 +140,9 @@ show_commands_menu() {
 
 #ГЛАВНОЕ МЕНЮ
 echo "Режим:"
-echo "1) 🔴 Полная переустановка (все данные будут удалены!)"
-echo "2) 🔵 Автофикс"
-echo "3) 🟢 Управление системой (меню команд)"
+echo "1) Полная переустановка (все данные будут удалены!)"
+echo "2) Автофикс"
+echo "3) Управление системой (меню команд)"
 read -p "Выбор (1-3): " mode
 
 if [[ $mode == 3 ]]; then
@@ -270,54 +270,63 @@ ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e \"
     FLUSH PRIVILEGES;
 \""
 
-echo "[$MASTER] Создание sakila..."
-ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e 'CREATE DATABASE IF NOT EXISTS sakila CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'"
+# Сброс мастера ПЕРЕД импортом
+echo "[$MASTER] Сброс бинарных логов..."
+ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e 'RESET MASTER;'"
 
-# Импорт sak.sql
-echo -e "\n[MASTER] Импорт sak.sql..."
-if ssh "$MASTER" "test -f /home/$SSH_USER/sak.sql"; then
-    echo "  Найден /home/$SSH_USER/sak.sql"
-    echo "  Конвертация коллаций MySQL 8, MariaDB 10..."
-    ssh "$MASTER" "cat /home/$SSH_USER/sak.sql | \
-        sed 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' | \
-        sed 's/utf8mb4_general_ci/utf8mb4_unicode_ci/g' | \
-        sudo mysql -u root -p'Testpass1\$' sakila"
-    echo "Импорт завершен"
-echo "Создаём/проверяем тестовую таблицу test_replication..."
-ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e \"
-    USE sakila;
-    CREATE TABLE IF NOT EXISTS test_replication (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        msg VARCHAR(200),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    INSERT IGNORE INTO test_replication (msg) VALUES ('Initial data after import');
-    \""
+# Функция импорта
+import_sakila() {
+    local host="$1"
+    echo "[$host] Импорт sak.sql..."
 
-elif ssh "$MASTER" "test -f /tmp/sak.sql"; then
-    echo "  Найден /tmp/sak.sql"
-    ssh "$MASTER" "cat /tmp/sak.sql | \
-        sed 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' | \
-        sed 's/utf8mb4_general_ci/utf8mb4_unicode_ci/g' | \
-        sudo mysql -u root -p'Testpass1\$' sakila"
-    echo "Импорт завершен"
-else
-    echo "sak.sql не найден, создаём тестовую таблицу"
-    ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e \"
+    # 1. Создаём базу
+    ssh "$host" "sudo mysql -u root -p'Testpass1\$' -e 'CREATE DATABASE IF NOT EXISTS sakila CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'"
+
+    if ssh "$host" "test -f /home/$SSH_USER/sak.sql"; then
+        echo "  Найден /home/$SSH_USER/sak.sql"
+        echo "  Конвертация коллаций MySQL 8, MariaDB 10..."
+        # 2. Импортируем с указанием базы sakila в конце команды
+        ssh "$host" "cat /home/$SSH_USER/sak.sql | \
+            sed 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' | \
+            sed 's/utf8mb4_general_ci/utf8mb4_unicode_ci/g' | \
+            sudo mysql -u root -p'Testpass1\$' sakila"
+    elif ssh "$host" "test -f /tmp/sak.sql"; then
+        echo "  Найден /tmp/sak.sql"
+        ssh "$host" "cat /tmp/sak.sql | \
+            sed 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' | \
+            sed 's/utf8mb4_general_ci/utf8mb4_unicode_ci/g' | \
+            sudo mysql -u root -p'Testpass1\$' sakila"
+    else
+        echo "sak.sql не найден, создаём тестовые данные"
+        ssh "$host" "sudo mysql -u root -p'Testpass1\$' -e \"
+            USE sakila;
+            CREATE TABLE IF NOT EXISTS test_replication (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                msg VARCHAR(200),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO test_replication (msg) VALUES ('Initial data');
+        \""
+        return
+    fi
+
+    echo "  Создание тестовой таблицы..."
+    ssh "$host" "sudo mysql -u root -p'Testpass1\$' -e \"
         USE sakila;
         CREATE TABLE IF NOT EXISTS test_replication (
             id INT AUTO_INCREMENT PRIMARY KEY,
             msg VARCHAR(200),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO test_replication (msg) VALUES ('Initial data');
+        INSERT IGNORE INTO test_replication (msg) VALUES ('Initial data after import');
     \""
-fi
+}
 
-# Сброс мастера
-ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e 'RESET MASTER;'"
+# ИМПОРТ НА ОБА СЕРВЕРА
+import_sakila "$MASTER"
+import_sakila "$REPLICA"
 
-# Получаем текущую позицию
+# Получаем позицию НА МАСТЕРЕ после импорта
 read -r binlog_file binlog_pos < <(ssh "$MASTER" "sudo mysql -u root -p'Testpass1\$' -e 'SHOW MASTER STATUS' | tail -1 | awk '{print \$1, \$2}'")
 
 echo "[$REPLICA] Настройка репликации (позиция: $binlog_file:$binlog_pos)..."
@@ -329,8 +338,7 @@ ssh "$REPLICA" "sudo mysql -u root -p'Testpass1\$' -e \"
         MASTER_USER='repl',
         MASTER_PASSWORD='$MYSQL_PASS',
         MASTER_LOG_FILE='$binlog_file',
-        MASTER_LOG_POS=$binlog_pos,
-        MASTER_USE_GTID=current_pos;
+        MASTER_LOG_POS=$binlog_pos;
     START SLAVE;
 \""
 sleep 5
@@ -397,8 +405,9 @@ run_sudo "$MASTER" "$BACKUP_SCRIPT"
 echo -e "\nПроверка репликации:"
 if check_replication; then
     echo "Репликация работает (IO и SQL трейды Yes, отставание 0 сек)"
-    echo "Проверка последних изменений в sakila.film:"
+    echo "Проверка данных на MASTER:"
     ssh "$MASTER"  "sudo mysql -u root -p'Testpass1\$' -e 'USE sakila; SELECT film_id, title, last_update FROM film ORDER BY last_update DESC LIMIT 3;'"
+    echo "Проверка данных на REPLICA:"
     ssh "$REPLICA" "sudo mysql -u root -p'Testpass1\$' -e 'USE sakila; SELECT film_id, title, last_update FROM film ORDER BY last_update DESC LIMIT 3;'"
 else
     echo "Проблема с репликацией"
